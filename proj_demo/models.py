@@ -2,90 +2,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import torch.nn.functional as F
-
-
-class FeatAggregate(nn.Module):
-    def __init__(self, input_size=1024, hidden_size=128, out_size=128):
-        super(FeatAggregate, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.out_size = out_size
-        self.lstm1 = nn.LSTMCell(input_size, hidden_size)
-        self.lstm2 = nn.LSTMCell(hidden_size, out_size)
-
-    def forward(self, feats):
-        h_t = Variable(torch.zeros(feats.size(0), self.hidden_size).float(), requires_grad=False)
-        c_t = Variable(torch.zeros(feats.size(0), self.hidden_size).float(), requires_grad=False)
-        h_t2 = Variable(torch.zeros(feats.size(0), self.out_size).float(), requires_grad=False)
-        c_t2 = Variable(torch.zeros(feats.size(0), self.out_size).float(), requires_grad=False)
-
-        if feats.is_cuda:
-            h_t = h_t.cuda()
-            c_t = c_t.cuda()
-            h_t2 = h_t2.cuda()
-            c_t2 = c_t2.cuda()
-
-        for _, feat_t in enumerate(feats.chunk(feats.size(1), dim=1)):
-            h_t, c_t = self.lstm1(feat_t, (h_t, c_t))
-            h_t2, c_t2 = self.lstm2(h_t, (h_t2, c_t2))
-
-        # aggregated feature
-        feat = h_t2
-        return feat
-
-# Visual-audio multimodal metric learning: LSTM*2+FC*2
-class VAMetric(nn.Module):
-    def __init__(self):
-        super(VAMetric, self).__init__()
-        self.VFeatPool = FeatAggregate(1024, 512, 128)
-        self.AFeatPool = FeatAggregate(128, 128, 128)
-        self.fc = nn.Linear(128, 64)
-        self.init_params()
-
-    def init_params(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform(m.weight)
-                nn.init.constant(m.bias, 0)
-
-    def forward(self, vfeat, afeat):
-        vfeat = self.VFeatPool(vfeat)
-        afeat = self.AFeatPool(afeat)
-        vfeat = self.fc(vfeat)
-        afeat = self.fc(afeat)
-
-        return F.pairwise_distance(vfeat, afeat)
-
-
-# Visual-audio multimodal metric learning: MaxPool+FC
-class VAMetric2(nn.Module):
-    def __init__(self, framenum=120):
-        super(VAMetric2, self).__init__()
-        self.mp = nn.MaxPool1d(framenum)
-        self.vfc = nn.Linear(1024, 128)
-        self.fc = nn.Linear(128, 96)
-        self.init_params()
-
-    def init_params(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform(m.weight)
-                nn.init.constant(m.bias, 0)
-
-    def forward(self, vfeat, afeat):
-        # aggregate the visual features
-        vfeat = self.mp(vfeat)
-        vfeat = vfeat.view(-1, 1024)
-        vfeat = F.relu(self.vfc(vfeat))
-        vfeat = self.fc(vfeat)
-
-        # aggregate the auditory features
-        afeat = self.mp(afeat)
-        afeat = afeat.view(-1, 128)
-        afeat = self.fc(afeat)
-
-        return F.pairwise_distance(vfeat, afeat)
-
+import numpy as np
 
 class ContrastiveLoss(torch.nn.Module):
     """
@@ -97,7 +14,51 @@ class ContrastiveLoss(torch.nn.Module):
         self.margin = margin
 
     def forward(self, dist, label):
+        dist = torch.squeeze(dist)
+        #print(dist)
         loss = torch.mean((1-label) * torch.pow(dist, 2) +
                 (label) * torch.pow(torch.clamp(self.margin - dist, min=0.0), 2))
-
         return loss
+
+class VAMetric(nn.Module):
+	def __init__(self):
+		super(VAMetric, self).__init__()
+		self.conv1 = nn.Conv2d(1,300,(1,1152))
+		self.lstm1 = nn.LSTMCell(300, 128)
+		self.lstm2 = nn.LSTMCell(128, 128)
+		self.fc1 = nn.Linear(128, 1)
+
+	def init_params(self):
+		for m in self.modules():
+			if isinstance(m, nn.Linear):
+				nn.init.xavier_uniform(m.weight)
+				nn.init.constant(m.bias, 0)
+
+	def forward(self, vfeat, afeat):
+		#vfeat 128*120*1024
+		#afeat 128*120*128
+		feat = torch.cat((vfeat,afeat), 2) #128*120*1152
+		feat = torch.unsqueeze(feat, 1) #128*1*120*1152
+		#print(feat.size())
+
+		feat1 = F.relu(self.conv1(feat)) #128*300*120*1
+		feat1 = torch.squeeze(feat1) #128*300*120
+
+		h_t1 = Variable(torch.zeros(feat1.size(0), 128).float(), requires_grad=False)
+		c_t1 = Variable(torch.zeros(feat1.size(0), 128).float(), requires_grad=False)
+		h_t2 = Variable(torch.zeros(feat1.size(0), 128).float(), requires_grad=False)
+		c_t2 = Variable(torch.zeros(feat1.size(0), 128).float(), requires_grad=False)
+
+		h_t1 = h_t1.cuda()
+		c_t1 = c_t1.cuda()
+		h_t2 = h_t2.cuda()
+		c_t2 = c_t2.cuda()
+
+		for _, feat_t in enumerate(feat1.chunk(feat1.size(2), dim=2)):
+			feat_t = torch.squeeze(feat_t)
+			h_t1, c_t1 = self.lstm1(feat_t, (h_t1, c_t1))
+			h_t2, c_t2 = self.lstm2(h_t1, (h_t2, c_t2))
+
+		#print(h_t2.size())
+		pair = F.relu(self.fc1(h_t2)) #128*1
+		return pair

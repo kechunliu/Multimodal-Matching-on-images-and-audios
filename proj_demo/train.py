@@ -9,24 +9,25 @@ import numpy as np
 from optparse import OptionParser
 
 import torch
+import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import LambdaLR as LR_Policy
 
-import models
+import models_lkc0
 from dataset import VideoFeatDataset as dset
 from tools.config_tools import Config
 from tools import utils
 
 
-parser = OptionParser()
+parser = OptionParser() 
 parser.add_option('--config',
                   type=str,
                   help="training configuration",
                   default="./configs/train_config.yaml")
 
-(opts, args) = parser.parse_args()
+(opts, args) = parser.parse_args() 
 assert isinstance(opts, object)
 opt = Config(opts.config)
 print(opt)
@@ -77,6 +78,8 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     for i, (vfeat, afeat) in enumerate(train_loader):
         # shuffling the index orders
         bz = vfeat.size()[0]
+        t = vfeat.size()
+        t1 = afeat.size()
         orders = np.arange(bz).astype('int32')
         shuffle_orders = orders.copy()
         np.random.shuffle(shuffle_orders)
@@ -87,7 +90,6 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         # concat the vfeat and afeat respectively
         afeat0 = torch.cat((afeat, afeat2), 0)
         vfeat0 = torch.cat((vfeat, vfeat), 0)
-
         # generating the labels
         # 1. the labels for the shuffled feats
         label1 = (orders == shuffle_orders + 0).astype('float32')
@@ -101,10 +103,9 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         # concat the labels together
         target = torch.cat((target2, target1), 0)
         target = 1 - target
-
         # transpose the feats
-        vfeat0 = vfeat0.transpose(2, 1)
-        afeat0 = afeat0.transpose(2, 1)
+        #vfeat0 = vfeat0.transpose(1, 2)
+        #afeat0 = afeat0.transpose(1, 2)
 
         # put the data into Variable
         vfeat_var = Variable(vfeat0)
@@ -118,9 +119,12 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
             target_var = target_var.cuda()
 
         # forward, backward optimize
-        sim = model(vfeat_var, afeat_var)   # inference simialrity
-        loss = criterion(sim, target_var)   # compute contrastive loss
+       
 
+        sim = model(vfeat_var, afeat_var)   # inference simialrity
+        #print(sim.size())
+        loss = criterion(sim, target_var)   # compute contrastive loss
+       
         ##############################
         # update loss in the loss meter
         ##############################
@@ -144,10 +148,29 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
         batch_time.update(time.time() - end)
         end = time.time()
         if i % opt.print_freq == 0:
-            log_str = 'Epoch: [{0}][{1}/{2}]\t Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t Loss {loss.val:.4f} ({loss.avg:.4f})'.format(epoch, i, len(train_loader), batch_time=batch_time, loss=losses)
+            log_str = 'Epoch: [{0}][{1}/{2}]\t Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t Loss {loss.val:.4f} ({loss.avg:.4f})\t '.format(epoch, i, len(train_loader), batch_time=batch_time, loss=losses)
             print(log_str)
+        if i == 0:
+            txtName = "loss_250.txt"
+            f = open(txtName, "a+")
+            new_context = '{0}\t{loss.val:.4f}\n'.format(epoch,loss = losses)
+            f.write(new_context)
+            f.close()
+# learning rate adjustment function
+# def LR_Policy(optimizer, lr, policy):
+#     print('Adjust learning rate!')
+#     for param_group in optimizer.param_groups:
+#         param_group['lr'] = lr * policy
+
+def LR_Policy(optimizer, lr, policy):
+    print('LR_Policy Called!', end = '')
+    lr = lr * policy
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+        print('Lr Adjust to: %.6f'%(lr))
 
 
+# main function for training the model
 def main():
     global opt
     # train data loader
@@ -155,43 +178,41 @@ def main():
                                      shuffle=True, num_workers=int(opt.workers))
 
     # create model
-    model = models.VAMetric2()
+    model = models_lkc0.VAMetric()
 
     if opt.init_model != '':
         print('loading pretrained model from {0}'.format(opt.init_model))
         model.load_state_dict(torch.load(opt.init_model))
 
     # Contrastive Loss
-    criterion = models.ContrastiveLoss()
-
+    criterion = models_lkc0.ContrastiveLoss()
+    #criterion = models.SoftMaxLoss()
     if opt.cuda:
         print('shift model and criterion to GPU .. ')
         model = model.cuda()
         criterion = criterion.cuda()
 
     # optimizer
-    optimizer = optim.SGD(model.parameters(), opt.lr,
-                                momentum=opt.momentum,
-                                weight_decay=opt.weight_decay)
+    #optimizer = optim.SGD(model.parameters(), opt.lr,
+    #                            momentum=opt.momentum,
+    #                            weight_decay=opt.weight_decay)
+    optimizer = optim.Adam(model.parameters(), opt.lr, weight_decay=opt.weight_decay)
 
     # adjust learning rate every lr_decay_epoch
     lambda_lr = lambda epoch: opt.lr_decay ** ((epoch + 1) // opt.lr_decay_epoch)   #poly policy
-    scheduler = LR_Policy(optimizer, lambda_lr)
 
-    for epoch in range(resume_epoch, opt.max_epochs):
-    	#################################
+    for epoch in range(opt.max_epochs):
+        #################################
         # train for one epoch
         #################################
         train(train_loader, model, criterion, optimizer, epoch, opt)
-        scheduler.step()
+        LR_Policy(optimizer, opt.lr, lambda_lr(epoch))      # adjust learning rate through poly policy
 
         ##################################
-        # save checkpoints
+        # save checkpoint every 10 epochs
         ##################################
-
-        # save model every 10 epochs
         if ((epoch+1) % opt.epoch_save) == 0:
-            path_checkpoint = '{0}/{1}_state_epoch{2}.pth'.format(opt.checkpoint_folder, opt.prefix, epoch+1)
+            path_checkpoint = '{0}/{1}_state_epoch_250{2}.pth'.format(opt.checkpoint_folder, opt.prefix, epoch+1)
             utils.save_checkpoint(model.state_dict(), path_checkpoint)
 
 if __name__ == '__main__':

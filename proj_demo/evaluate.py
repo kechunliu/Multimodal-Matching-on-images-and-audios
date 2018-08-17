@@ -53,43 +53,55 @@ def test(video_loader, audio_loader, model, opt):
     train for one epoch on the training set
     """
     # training mode
-    model.eval()
+    model.eval()  #Sets the module in evaluation mode.
 
     sim_mat = []
     right = 0
-    for _, vfeat in enumerate(video_loader):
-        for _, afeat in enumerate(audio_loader):
+    for i, vfeat in enumerate(video_loader):
+        for j, afeat in enumerate(audio_loader):
             # transpose feats
-            vfeat = vfeat.transpose(2,1)
-            afeat = afeat.transpose(2,1)
+            #vfeat = vfeat.transpose(2,1)
+            #afeat = afeat.transpose(2,1)
 
             # shuffling the index orders
-            bz = vfeat.size()[0]
-            for k in np.arange(bz):
-                cur_vfeat = vfeat[k].clone()
-                cur_vfeats = cur_vfeat.repeat(bz, 1, 1)
+            if i == j:
+                sim_mat = []
+                right = 0
+                bz = vfeat.size()[0]
+                print(bz)
+                for k in np.arange(bz):
+                    #print(k)
+                    cur_vfeat = vfeat[k].clone()  #1*120*1024
+                    cur_vfeats = cur_vfeat.repeat(bz, 1, 1)  #bz*120*1024
+                    vfeat_var = Variable(cur_vfeats)
+                    afeat_var = Variable(afeat)
 
-                vfeat_var = Variable(cur_vfeats)
-                afeat_var = Variable(afeat)
+                    if opt.cuda:
+                        vfeat_var = vfeat_var.cuda()
+                        afeat_var = afeat_var.cuda()
 
-                if opt.cuda:
-                    vfeat_var = vfeat_var.cuda()
-                    afeat_var = afeat_var.cuda()
-
-                cur_sim = model(vfeat_var, afeat_var)
-                if k == 0:
-                    simmat = cur_sim.clone()
-                else:
-                    simmat = torch.cat((simmat, cur_sim), 1)
-            sorted, indices = torch.sort(simmat, 0)
-            np_indices = indices.cpu().data.numpy()
-            topk = np_indices[:opt.topk,:]
-            for k in np.arange(bz):
-                order = topk[:,k]
-                if k in order:
-                    right = right + 1
-            print('The similarity matrix: \n {}'.format(simmat))
-            print('Testing accuracy (top{}): {:.3f}'.format(opt.topk, right/bz))
+                    cur_sim = model(vfeat_var, afeat_var)  #bz*1
+                    if k == 0:
+                        simmat = cur_sim.clone()
+                    else:
+                        simmat = torch.cat((simmat, cur_sim), 1)  #bz*bz
+                sorted, indices = torch.sort(simmat, 0)   #bz*bz
+                np_indices = indices.cpu().data.numpy()
+                topk = np_indices[:opt.topk,:]
+                #print(topk)
+                for k in np.arange(bz):
+                    order = topk[:,k]
+                    if k in order:
+                        right = right + 1
+                print('The similarity matrix: \n {}'.format(simmat))
+                #print(simmat.size())
+                #print(indices)
+                print('Testing accuracy (top{}): {:.3f}'.format(opt.topk, right/bz))
+                #txtName = "accuracy12.txt"
+                #f = open(txtName, "a+")
+                #new_context = '{:.3f}\n'.format(right/bz)
+                #f.write(new_context)
+                #f.close()
 
 def main():
     global opt
@@ -100,10 +112,10 @@ def main():
                                      shuffle=False, num_workers=int(opt.workers))
 
     # create model
-    model = models.VAMetric2()
+    model = models.VAMetric()
 
+    #for k1 in np.arange(1,30):
     if opt.init_model != '':
-        print('loading pretrained model from {0}'.format(opt.init_model))
         model.load_state_dict(torch.load(opt.init_model))
 
     if opt.cuda:
@@ -111,7 +123,5 @@ def main():
         model = model.cuda()
 
     test(test_video_loader, test_audio_loader, model, opt)
-
-
 if __name__ == '__main__':
     main()
